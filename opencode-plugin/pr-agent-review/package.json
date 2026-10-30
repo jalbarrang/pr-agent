@@ -1,0 +1,21 @@
+{
+  "name": "pr-agent-review",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin that runs PR-Agent's review logic on local git changes",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "^2.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

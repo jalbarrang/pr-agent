@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    // Local PR-Agent review tool. See opencode-plugin/pr-agent-review/README.md.
+    // backend: "auto" (project venv, else uv), "venv", "uv", or "docker".
+    {
+      "package": "./opencode-plugin/pr-agent-review",
+      "options": {
+        "backend": "auto"
+      }
+    }
+  ]
+}
