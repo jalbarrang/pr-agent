@@ -1,0 +1,73 @@
+name: pr-agent-opencode
+
+# Shared build context (the repository root).
+x-build: &build
+  context: ../..
+  dockerfile: docker/Dockerfile
+
+# Model routing for the OpenCode Go gateway.
+# Every value can be overridden from a local .env file or the shell, e.g.
+#   PR_AGENT_REASONING_EFFORT=low docker compose up -d
+x-opencode-env: &opencode-env
+  OPENAI__API_BASE: ${OPENAI_API_BASE:-https://opencode.ai/inference/go/openai/v1}
+  CONFIG__MODEL: ${PR_AGENT_MODEL:-openai/deepseek-v4.1-flash}
+  CONFIG__MODEL_WEAK: ${PR_AGENT_MODEL_WEAK:-openai/glm-5.3-flash}
+  CONFIG__FALLBACK_MODELS: ${PR_AGENT_FALLBACK_MODELS:-["openai/glm-5.3-flash"]}
+  CONFIG__ADDITIONAL_REASONING_EFFORT_MODELS: ${PR_AGENT_EFFORT_MODELS:-["deepseek-v4.1-flash","glm-5.3-flash"]}
+  CONFIG__REASONING_EFFORT: ${PR_AGENT_REASONING_EFFORT:-high}
+  CONFIG__CUSTOM_MODEL_MAX_TOKENS: ${PR_AGENT_CUSTOM_MAX_TOKENS:-200000}
+  CONFIG__MAX_MODEL_TOKENS: ${PR_AGENT_MAX_MODEL_TOKENS:-200000}
+  CONFIG__AI_TIMEOUT: ${PR_AGENT_AI_TIMEOUT:-300}
+
+services:
+  # GitHub App webhook server. Host it, expose it with a tunnel, and point the
+  # GitHub App webhook at https://<public-url>/api/v1/github_webhooks.
+  pr-agent:
+    build:
+      <<: *build
+      target: github_app
+    image: pr-agent:opencode-github-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment: *opencode-env
+    volumes:
+      # Host secrets: [openai] key, [litellm] headers, [github] app credentials.
+      - ./secrets:/app/pr_agent/settings_prod:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/', timeout=5).status == 200 else 1)
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # One-shot CLI runs:
+  #   docker compose --profile cli run --rm pr-agent-cli --pr_url <url> review
+  pr-agent-cli:
+    profiles:
+      - cli
+    build:
+      <<: *build
+      target: cli
+    image: pr-agent:opencode-cli
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *opencode-env
+      # A Windows checkout bind-mounted into Linux Git looks dirty otherwise:
+      # CRLF line endings and 0777 mount permissions.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: input
+      GIT_CONFIG_KEY_1: core.fileMode
+      GIT_CONFIG_VALUE_1: "false"
+    volumes:
+      - ./secrets:/app/pr_agent/settings_prod:ro
