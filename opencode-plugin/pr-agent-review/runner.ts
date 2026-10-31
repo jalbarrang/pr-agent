@@ -74,15 +74,23 @@ function exec(command: string, args: string[], options: {
         )
 
         const abort = () => child.kill()
+        if (options.signal?.aborted) {
+            abort()
+        }
         options.signal?.addEventListener("abort", abort, { once: true })
         child.on("close", () => options.signal?.removeEventListener("abort", abort))
 
         child.on("error", (error) => reject(error))
         if (options.stdin !== undefined) {
+            // A cancelled child stops reading stdin, so EPIPE must not go unhandled.
+            child.stdin?.on("error", () => {})
             child.stdin?.end(options.stdin, "utf8")
         }
     })
 }
+
+/** `git diff --no-index` needs the platform null device to emit a new-file patch. */
+const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null"
 
 async function git(args: string[], cwd: string, signal?: AbortSignal): Promise<ExecResult> {
     return exec("git", ["-c", "core.quotepath=false", ...args], { cwd, signal })
@@ -151,9 +159,11 @@ export async function buildDiff(
         const untracked = listed.stdout.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 100)
         for (const file of untracked) {
             // Exit code 1 means "differences found", which is the normal case here.
-            const patch = await git(["diff", "--no-color", "--no-index", "--", "/dev/null", file], root, signal)
+            const patch = await git(["diff", "--no-color", "--no-index", "--", NULL_DEVICE, file], root, signal)
             if (patch.stdout) {
                 parts.push(patch.stdout)
+            } else if (patch.code !== 0 && patch.code !== 1) {
+                throw new Error(`Could not read untracked file "${file}":\n${patch.stderr.trim()}`)
             }
         }
     }
@@ -218,9 +228,11 @@ function resolveBackend(options: RunnerOptions): Exclude<Backend, "auto"> {
 
 function dockerArgs(input: ReviewInput, options: RunnerOptions, repo: string, outDir: string): string[] {
     const env = childEnv(options)
-    const envFlags = Object.entries(env)
-        .filter(([key]) => key.startsWith("OPENAI__") || key.startsWith("CONFIG__") || key.startsWith("LITELLM__"))
-        .flatMap(([key, value]) => ["-e", `${key}=${value ?? ""}`])
+    // Pass names only: compose copies the value from this process's environment,
+    // so credentials stay out of the compose command line.
+    const envFlags = Object.keys(env)
+        .filter((key) => key.startsWith("OPENAI__") || key.startsWith("CONFIG__") || key.startsWith("LITELLM__"))
+        .flatMap((key) => ["-e", key])
 
     return [
         "compose",
@@ -248,6 +260,10 @@ export interface ReviewResult {
  * markdown it writes to stdout.
  */
 export async function reviewLocal(input: ReviewInput, options: RunnerOptions): Promise<ReviewResult> {
+    if (input.signal?.aborted) {
+        throw new Error("PR-Agent review was cancelled.")
+    }
+
     const repo = await resolveRepoRoot(input.dir, input.signal)
     const diff = await buildDiff(repo, input.mode, input.base, input.signal)
 
@@ -288,6 +304,10 @@ export async function reviewLocal(input: ReviewInput, options: RunnerOptions): P
             stdin: diff,
             signal: input.signal,
         })
+
+        if (input.signal?.aborted) {
+            throw new Error("PR-Agent review was cancelled.")
+        }
 
         if (result.code !== 0) {
             const tail = (result.stderr || result.stdout).trim().split("\n").slice(-25).join("\n")
