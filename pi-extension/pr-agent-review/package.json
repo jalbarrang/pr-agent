@@ -1,0 +1,20 @@
+{
+  "name": "pr-agent-review",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension that runs PR-Agent's review logic on local git changes",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

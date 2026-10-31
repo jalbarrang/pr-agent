@@ -1,0 +1,15 @@
+{
+  "backend": "auto",
+  "uvBinary": "uv",
+  "apiBase": "https://opencode.ai/inference/go/openai/v1",
+  "model": "openai/deepseek-v4.1-flash",
+  "modelWeak": "openai/glm-5.3-flash",
+  "fallbackModels": ["openai/glm-5.3-flash"],
+  "effortModels": ["deepseek-v4.1-flash", "glm-5.3-flash"],
+  "reasoningEffort": "high",
+  "customModelMaxTokens": 200000,
+  "maxModelTokens": 200000,
+  "aiTimeout": 300,
+  "env": {},
+  "maxDiffBytes": 8388608
+}
