@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -50,7 +50,6 @@ interface ExecResult {
 function exec(command: string, args: string[], options: {
     cwd?: string
     env?: NodeJS.ProcessEnv
-    stdin?: string
     signal?: AbortSignal
 }): Promise<ExecResult> {
     return new Promise((resolve, reject) => {
@@ -81,11 +80,6 @@ function exec(command: string, args: string[], options: {
         child.on("close", () => options.signal?.removeEventListener("abort", abort))
 
         child.on("error", (error) => reject(error))
-        if (options.stdin !== undefined) {
-            // A cancelled child stops reading stdin, so EPIPE must not go unhandled.
-            child.stdin?.on("error", () => {})
-            child.stdin?.end(options.stdin, "utf8")
-        }
     })
 }
 
@@ -182,6 +176,9 @@ function childEnv(options: RunnerOptions): NodeJS.ProcessEnv {
         CONFIG__CUSTOM_MODEL_MAX_TOKENS: String(options.customModelMaxTokens),
         CONFIG__MAX_MODEL_TOKENS: String(options.maxModelTokens),
         CONFIG__AI_TIMEOUT: String(options.aiTimeout),
+        // PR-Agent reads --diff-file as UTF-8, but its stdio still follows the console
+        // code page on Windows; UTF-8 mode keeps logs and stdin from mangling text.
+        PYTHONUTF8: "1",
         // PR-Agent turns handled failures into a "Failed to review PR" artifact; this
         // adds its allowlisted reason so the failure says why instead of only that.
         PR_REVIEWER__PUBLISH_ERROR_DETAILS: "true",
@@ -189,8 +186,13 @@ function childEnv(options: RunnerOptions): NodeJS.ProcessEnv {
     }
 }
 
-function cliArgs(input: ReviewInput, outputPath: string): string[] {
-    const args = ["--stdin", "--output", outputPath, input.command]
+/**
+ * Plain-diff arguments. The diff travels as a UTF-8 file: PR-Agent decodes stdin
+ * with the console code page on Windows, which turns bytes like 0x81 (inside
+ * ordinary UTF-8 sequences) into lone surrogates that the HTTP client rejects.
+ */
+function cliArgs(input: ReviewInput, diffPath: string, outputPath: string): string[] {
+    const args = ["--diff-file", diffPath, "--output", outputPath, input.command]
     if (input.command === "ask") {
         if (!input.question?.trim()) {
             throw new Error("`question` is required when command is \"ask\".")
@@ -200,13 +202,13 @@ function cliArgs(input: ReviewInput, outputPath: string): string[] {
     return args
 }
 
-function uvArgs(input: ReviewInput, root: string, outputPath: string): string[] {
+function uvArgs(input: ReviewInput, root: string, diffPath: string, outputPath: string): string[] {
     // `uv run` syncs the project venv on first use and runs it from any directory.
     return [
         "run",
         "--project", root,
         "python", "-m", "pr_agent.cli",
-        ...cliArgs(input, outputPath),
+        ...cliArgs(input, diffPath, outputPath),
     ]
 }
 
@@ -217,8 +219,8 @@ export function venvPython(root: string): string {
         : join(root, ".venv", "bin", "python")
 }
 
-function venvArgs(input: ReviewInput, outputPath: string): string[] {
-    return ["-m", "pr_agent.cli", ...cliArgs(input, outputPath)]
+function venvArgs(input: ReviewInput, diffPath: string, outputPath: string): string[] {
+    return ["-m", "pr_agent.cli", ...cliArgs(input, diffPath, outputPath)]
 }
 
 function resolveBackend(options: RunnerOptions): Exclude<Backend, "auto"> {
@@ -248,7 +250,7 @@ function dockerArgs(input: ReviewInput, options: RunnerOptions, repo: string, ou
         ...envFlags,
         "pr-agent-cli",
         "/app/pr_agent/cli.py",
-        ...cliArgs(input, "/out/result.md"),
+        ...cliArgs(input, "/out/diff.patch", "/out/result.md"),
     ]
 }
 
@@ -286,8 +288,11 @@ export async function reviewLocal(input: ReviewInput, options: RunnerOptions): P
 
     const outDir = await mkdtemp(join(tmpdir(), "pr-agent-review-"))
     const hostOutput = join(outDir, "result.md")
+    const hostDiff = join(outDir, "diff.patch")
 
     try {
+        await writeFile(hostDiff, diff, "utf8")
+
         const backend = resolveBackend(options)
         const command = backend === "docker"
             ? "docker"
@@ -297,13 +302,12 @@ export async function reviewLocal(input: ReviewInput, options: RunnerOptions): P
         const args = backend === "docker"
             ? dockerArgs(input, options, repo, outDir)
             : backend === "uv"
-                ? uvArgs(input, options.prAgentRoot, hostOutput)
-                : venvArgs(input, hostOutput)
+                ? uvArgs(input, options.prAgentRoot, hostDiff, hostOutput)
+                : venvArgs(input, hostDiff, hostOutput)
 
         const result = await exec(command, args, {
             cwd: repo,
             env: childEnv(options),
-            stdin: diff,
             signal: input.signal,
         })
 

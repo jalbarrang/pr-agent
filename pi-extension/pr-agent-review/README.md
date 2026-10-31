@@ -145,10 +145,17 @@ extension load so the problem is visible instead of silently falling back to def
 
 1. Resolves the repository root with `git rev-parse --show-toplevel`.
 2. Builds a unified diff (including untracked files in `working` mode).
-3. Pipes it to `pr_agent.cli --stdin --output <temp file> <command>`.
-4. Reads the report back from the temp file and returns it as tool content.
+3. Writes it as UTF-8 to a temp file and runs
+   `pr_agent.cli --diff-file <diff> --output <result> <command>`.
+4. Reads the report back from the output file and returns it as tool content.
 
-The temp file matters: PR-Agent's logger writes to stdout, so parsing stdout would mix logs into the
+The diff travels as a file rather than on stdin on purpose: PR-Agent decodes stdin with the console code
+page (on Windows `cp1252` with `surrogateescape`), so a byte like `0x81` inside an ordinary UTF-8
+sequence becomes a lone surrogate that the HTTP client refuses to encode
+(`'utf-8' codec can't encode character '\udc81'`). `--diff-file` is read as UTF-8, and the child runs
+with `PYTHONUTF8=1` so its logs keep the same encoding.
+
+The output file matters: PR-Agent's logger writes to stdout, so parsing stdout would mix logs into the
 report. `--output` gives clean markdown.
 
 PR-Agent reports model failures by writing a `Failed to review PR` artifact and exiting `0`. The runner
