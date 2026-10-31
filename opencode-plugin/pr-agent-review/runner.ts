@@ -174,8 +174,7 @@ export async function buildDiff(
 function childEnv(options: RunnerOptions): NodeJS.ProcessEnv {
     return {
         ...process.env,
-        OPENAI__API_BASE: options.apiBase,
-        CONFIG__MODEL: options.model,
+        OPENAI__API_BASE: options.apiBase,        CONFIG__MODEL: options.model,
         CONFIG__MODEL_WEAK: options.modelWeak,
         CONFIG__FALLBACK_MODELS: JSON.stringify(options.fallbackModels),
         CONFIG__ADDITIONAL_REASONING_EFFORT_MODELS: JSON.stringify(options.effortModels),
@@ -183,6 +182,9 @@ function childEnv(options: RunnerOptions): NodeJS.ProcessEnv {
         CONFIG__CUSTOM_MODEL_MAX_TOKENS: String(options.customModelMaxTokens),
         CONFIG__MAX_MODEL_TOKENS: String(options.maxModelTokens),
         CONFIG__AI_TIMEOUT: String(options.aiTimeout),
+        // PR-Agent turns handled failures into a "Failed to review PR" artifact; this
+        // adds its allowlisted reason so the failure says why instead of only that.
+        PR_REVIEWER__PUBLISH_ERROR_DETAILS: "true",
         ...options.env,
     }
 }
@@ -317,12 +319,26 @@ export async function reviewLocal(input: ReviewInput, options: RunnerOptions): P
         // PR-Agent's logger writes to stdout, so the report is read back from
         // --output instead of being parsed out of the log stream.
         const markdown = await readFile(hostOutput, "utf8").catch(() => "")
-        if (!markdown.trim()) {
-            const tail = result.stderr.trim().split("\n").slice(-10).join("\n")
+        const report = markdown.trim()
+        if (!report) {
+            const tail = (result.stderr || result.stdout).trim().split("\n").slice(-10).join("\n")
             throw new Error(`PR-Agent produced no output.\n${tail}`)
         }
 
-        return { markdown: markdown.trim(), stderr: result.stderr }
+        // A handled review failure exits 0 with a placeholder artifact, so the
+        // logs are the only place the actual model error survives.
+        if (/^Failed to\b/.test(report)) {
+            const log = [result.stderr.trim(), result.stdout.trim()]
+                .filter(Boolean).join("\n")
+                .replace(/\u001b\[[0-9;]*m/g, "")
+                .split("\n").slice(-30).join("\n")
+            throw new Error(
+                `PR-Agent reported:\n${report}\n\nLog tail:\n${log}\n\n` +
+                "The failure happened inside PR-Agent; the log tail carries the provider or model error.",
+            )
+        }
+
+        return { markdown: report, stderr: result.stderr }
     } finally {
         await rm(outDir, { recursive: true, force: true })
     }
