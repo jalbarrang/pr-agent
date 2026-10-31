@@ -108,6 +108,13 @@ extra_headers = '{"User-Agent": "pr-agent/1.0", "x-opencode-session": "ses-pr-ag
 You can also set `OPENAI__KEY` in the environment (or through the `env` option) instead. The `docker`
 backend ignores this and uses its mounted copy.
 
+PR-Agent runs as its own process and calls the model itself, so Pi's provider login is not visible to it.
+The extension removes the hosting credentials (no GitHub/GitLab token, no PR URL, no webhook), but it
+still needs a model key for that process. When neither the secrets file nor `OPENAI__KEY` is present, the
+tool fails before running git and names the checkout it resolved, where that path came from
+(`config.json`, `PR_AGENT_ROOT`, the session directory, the extension directory), and the three ways to
+provide a key.
+
 ## Options
 
 Options come from `config.json` next to `index.ts` (override the path with `PR_AGENT_CONFIG`).
@@ -144,6 +151,12 @@ extension load so the problem is visible instead of silently falling back to def
 The temp file matters: PR-Agent's logger writes to stdout, so parsing stdout would mix logs into the
 report. `--output` gives clean markdown.
 
+PR-Agent reports model failures by writing a `Failed to review PR` artifact and exiting `0`. The runner
+treats that as a failure and returns the artifact, PR-Agent's allowlisted reason (via
+`PR_REVIEWER__PUBLISH_ERROR_DETAILS`), and the log tail that carries the provider error. Any failure also
+appends an environment report with the config path, resolved checkout and where it came from, backend,
+interpreter, credential source, endpoint, and models.
+
 ## Limits
 
 - Plain-diff mode cannot fetch repository files, so `repo_context_files` (e.g. `AGENTS.md`) is skipped.
@@ -157,7 +170,9 @@ report. `--output` gives clean markdown.
 
 | Symptom | Fix |
 | --- | --- |
-| `No credentials for the host backend` | Copy the secrets file, set `OPENAI__KEY`, or use `backend: "docker"` |
+| `Failed to review PR` | Now a tool error: read PR-Agent's reason and the log tail, usually a provider auth, quota, or timeout problem |
+| `No PR-Agent checkout at …` | The resolved `prAgentRoot` is not a checkout; set `prAgentRoot` or `PR_AGENT_ROOT`, or install the extension inside a checkout |
+| `No PR-Agent model credentials for checkout …` | Create the secrets file, set `OPENAI__KEY`, or add it under `env` in `config.json` |
 | `Required uv version >=0.13.5 does not match` | Upgrade uv (`choco upgrade uv`, `pip install -U uv`, or the standalone installer) or use `backend: "venv"` |
 | `PR-Agent exited with code 1` | The message includes the stderr tail; usually credentials, endpoint, model, or a wrong `prAgentRoot` |
 | `Could not detect a base branch` | Pass `base`, for example `main` |

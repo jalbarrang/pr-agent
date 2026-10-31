@@ -8,10 +8,11 @@ import { Type } from "typebox"
 import {
     COMMANDS,
     MODES,
+    describeEnvironment,
     findPrAgentRoot,
-    hasHostCredentials,
     loadOptions,
     parseCommand,
+    requireReady,
     resolveOptions,
     type ReviewParams,
 } from "./options.ts"
@@ -73,15 +74,12 @@ export default function prAgentReview(pi: ExtensionAPI) {
             }
 
             const options = resolveOptions(configured, ctx.cwd, bundledRoot)
-            const backend = resolveBackend(options)
-
-            if (backend !== "docker" && !hasHostCredentials(options)) {
-                throw new Error(
-                    "No credentials for the host backend. Copy docker/opencode-local/secrets/.secrets.toml " +
-                    `to ${path.join(options.prAgentRoot, "pr_agent", "settings_prod", ".secrets.toml")}, ` +
-                    "set OPENAI__KEY, or switch the backend option to \"docker\".",
-                )
+            try {
+                requireReady(options, configPath)
+            } catch (error) {
+                throw new Error(`${error instanceof Error ? error.message : String(error)}\n\n${describeEnvironment(options, configPath)}`)
             }
+            const backend = resolveBackend(options)
 
             onUpdate?.({
                 content: [{ type: "text", text: `Running pr-agent ${command} (${mode}) via ${backend}...` }],
@@ -98,7 +96,10 @@ export default function prAgentReview(pi: ExtensionAPI) {
                     signal,
                 },
                 options,
-            )
+            ).catch((error: unknown) => {
+                const message = error instanceof Error ? error.message : String(error)
+                throw new Error(`${message}\n\n${describeEnvironment(options, configPath)}`)
+            })
 
             return {
                 content: [{ type: "text", text: result.markdown }],
